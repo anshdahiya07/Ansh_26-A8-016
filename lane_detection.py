@@ -1,435 +1,610 @@
 import cv2
 import numpy as np
+import os
 
 
-# ============================================
-# 1. READ IMAGE
-# ============================================
-
-image = cv2.imread("1.png")
-
-if image is None:
-    print("Image not found!")
-    exit()
-
-height, width = image.shape[:2]
+# ============================================================
+# LANE DETECTION FOR MULTIPLE IMAGES
+# Simple + stable version
+# ============================================================
 
 
-# ============================================
-# 2. CONVERT IMAGE TO HSV
-# ============================================
+def process_image(input_path, output_path):
 
-hsv = cv2.cvtColor(
-    image,
-    cv2.COLOR_BGR2HSV
-)
+    # --------------------------------------------------------
+    # 1. READ IMAGE
+    # --------------------------------------------------------
 
+    image = cv2.imread(input_path)
 
-# ============================================
-# 3. YELLOW MASK
-#    Used for the left lane marking
-# ============================================
+    if image is None:
+        print("Could not read:", input_path)
+        return
 
-lower_yellow = np.array(
-    [15, 80, 80],
-    dtype=np.uint8
-)
-
-upper_yellow = np.array(
-    [40, 255, 255],
-    dtype=np.uint8
-)
-
-yellow_mask = cv2.inRange(
-    hsv,
-    lower_yellow,
-    upper_yellow
-)
+    height, width = image.shape[:2]
 
 
-# ============================================
-# 4. WHITE MASK
-#    Used for the right lane marking
-# ============================================
+    # --------------------------------------------------------
+    # 2. GRAYSCALE + BLUR
+    # --------------------------------------------------------
 
-lower_white = np.array(
-    [0, 0, 160],
-    dtype=np.uint8
-)
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2GRAY
+    )
 
-upper_white = np.array(
-    [180, 90, 255],
-    dtype=np.uint8
-)
-
-white_mask = cv2.inRange(
-    hsv,
-    lower_white,
-    upper_white
-)
+    blur = cv2.GaussianBlur(
+        gray,
+        (5, 5),
+        0
+    )
 
 
-# ============================================
-# 5. CREATE ROI
-# ============================================
+    # --------------------------------------------------------
+    # 3. CANNY EDGES
+    # --------------------------------------------------------
 
-roi_mask = np.zeros(
-    (height, width),
-    dtype=np.uint8
-)
-
-roi_points = np.array([
-    (0, height),
-    (300, int(height * 0.42)),
-    (760, int(height * 0.42)),
-    (width, height)
-], dtype=np.int32)
-
-cv2.fillPoly(
-    roi_mask,
-    [roi_points],
-    255
-)
+    edges = cv2.Canny(
+        blur,
+        50,
+        150
+    )
 
 
-# Apply ROI to yellow mask
+    # --------------------------------------------------------
+    # 4. ROI
+    # --------------------------------------------------------
 
-yellow_mask = cv2.bitwise_and(
-    yellow_mask,
-    roi_mask
-)
+    mask = np.zeros_like(edges)
 
+    roi_points = np.array([
+        (0, height),
+        (int(width * 0.30), int(height * 0.43)),
+        (int(width * 0.70), int(height * 0.43)),
+        (width, height)
+    ], dtype=np.int32)
 
-# Apply ROI to white mask
+    cv2.fillPoly(
+        mask,
+        [roi_points],
+        255
+    )
 
-white_mask = cv2.bitwise_and(
-    white_mask,
-    roi_mask
-)
-
-
-# ============================================
-# 6. REMOVE SMALL NOISE
-# ============================================
-
-kernel = np.ones(
-    (5, 5),
-    dtype=np.uint8
-)
-
-yellow_mask = cv2.morphologyEx(
-    yellow_mask,
-    cv2.MORPH_OPEN,
-    kernel
-)
-
-white_mask = cv2.morphologyEx(
-    white_mask,
-    cv2.MORPH_OPEN,
-    kernel
-)
+    roi = cv2.bitwise_and(
+        edges,
+        mask
+    )
 
 
-# ============================================
-# 7. HOUGH TRANSFORM ON YELLOW MASK
-# ============================================
+    # --------------------------------------------------------
+    # 5. HSV FOR LANE COLORS
+    # --------------------------------------------------------
 
-yellow_lines = cv2.HoughLinesP(
-    yellow_mask,
-    1,
-    np.pi / 180,
-    threshold=30,
-    minLineLength=40,
-    maxLineGap=60
-)
+    hsv = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2HSV
+    )
 
 
-# ============================================
-# 8. HOUGH TRANSFORM ON WHITE MASK
-# ============================================
+    # Yellow
+    yellow_lower = np.array(
+        [10, 70, 70],
+        dtype=np.uint8
+    )
 
-white_lines = cv2.HoughLinesP(
-    white_mask,
-    1,
-    np.pi / 180,
-    threshold=30,
-    minLineLength=40,
-    maxLineGap=60
-)
+    yellow_upper = np.array(
+        [45, 255, 255],
+        dtype=np.uint8
+    )
+
+    yellow_mask = cv2.inRange(
+        hsv,
+        yellow_lower,
+        yellow_upper
+    )
 
 
-# ============================================
-# 9. FIND LEFT LANE LINE
-# ============================================
+    # White
+    white_lower = np.array(
+        [0, 0, 150],
+        dtype=np.uint8
+    )
 
-left_candidates = []
+    white_upper = np.array(
+        [180, 90, 255],
+        dtype=np.uint8
+    )
 
-if yellow_lines is not None:
+    white_mask = cv2.inRange(
+        hsv,
+        white_lower,
+        white_upper
+    )
 
-    # Convert Hough output to simple
-    # rows containing x1,y1,x2,y2
-    yellow_data = yellow_lines.reshape(
-        -1,
-        4
-    ).tolist()
 
-    for values in yellow_data:
+    # Apply ROI to color masks
 
-        x1, y1, x2, y2 = [
-            int(value)
-            for value in values
-        ]
+    yellow_mask = cv2.bitwise_and(
+        yellow_mask,
+        mask
+    )
 
-        if x2 == x1:
-            continue
+    white_mask = cv2.bitwise_and(
+        white_mask,
+        mask
+    )
 
-        # Calculate slope
-        slope = (
-            (y2 - y1)
-            / (x2 - x1)
+
+    # --------------------------------------------------------
+    # 6. COMBINE EDGES WITH LANE COLORS
+    #
+    # Give preference to actual yellow/white markings.
+    # --------------------------------------------------------
+
+    color_mask = cv2.bitwise_or(
+        yellow_mask,
+        white_mask
+    )
+
+
+    color_edges = cv2.Canny(
+        color_mask,
+        30,
+        100
+    )
+
+
+    # Combine normal edges and color edges
+    combined = cv2.bitwise_or(
+        roi,
+        color_edges
+    )
+
+
+    # --------------------------------------------------------
+    # 7. HOUGH LINES
+    # --------------------------------------------------------
+
+    lines = cv2.HoughLinesP(
+        combined,
+        1,
+        np.pi / 180,
+        threshold=40,
+        minLineLength=max(
+            40,
+            int(width * 0.06)
+        ),
+        maxLineGap=max(
+            50,
+            int(width * 0.08)
         )
+    )
 
-        # Calculate midpoint
-        mid_x = (x1 + x2) / 2
-        mid_y = (y1 + y2) / 2
 
-        # Left lane should have
-        # negative slope
-        if slope < -0.5:
+    # --------------------------------------------------------
+    # 8. COLLECT LEFT AND RIGHT LINES
+    # --------------------------------------------------------
 
-            # Keep left-side lines
-            if mid_x < width * 0.55:
+    left_lines = []
+    right_lines = []
 
-                # Ignore high lines
-                if mid_y > height * 0.40:
 
-                    left_candidates.append(
-                        (slope, x1, y1, x2, y2)
+    if lines is not None:
+
+        for line in lines:
+
+            x1, y1, x2, y2 = map(
+                int,
+                line[0]
+            )
+
+
+            dx = x2 - x1
+            dy = y2 - y1
+
+
+            if dx == 0:
+                continue
+
+
+            slope = dy / dx
+
+
+            # Ignore nearly horizontal lines
+            if abs(slope) < 0.35:
+                continue
+
+
+            # Ignore almost vertical lines
+            if abs(slope) > 4.0:
+                continue
+
+
+            # Midpoint
+            mid_x = (
+                x1 + x2
+            ) / 2
+
+            mid_y = (
+                y1 + y2
+            ) / 2
+
+
+            if mid_y < height * 0.43:
+                continue
+
+
+            # ------------------------------------------------
+            # Calculate x position at bottom
+            # ------------------------------------------------
+
+            if dy == 0:
+                continue
+
+
+            bottom_y = height - 1
+
+
+            x_bottom = (
+                x1
+                +
+                (bottom_y - y1)
+                *
+                dx
+                /
+                dy
+            )
+
+
+            # Reject impossible lines
+            if (
+                x_bottom < -width * 0.25
+                or
+                x_bottom > width * 1.25
+            ):
+                continue
+
+
+            length = np.sqrt(
+                dx * dx + dy * dy
+            )
+
+
+            # ------------------------------------------------
+            # LEFT
+            # ------------------------------------------------
+
+            if slope < -0.35:
+
+                # Must finish on left/centre
+                if x_bottom < width * 0.58:
+
+                    left_lines.append(
+                        (
+                            x_bottom,
+                            length,
+                            slope,
+                            x1,
+                            y1,
+                            x2,
+                            y2
+                        )
                     )
 
 
-# ============================================
-# 10. FIND RIGHT LANE LINE
-# ============================================
+            # ------------------------------------------------
+            # RIGHT
+            # ------------------------------------------------
 
-right_candidates = []
+            elif slope > 0.35:
 
-if white_lines is not None:
+                # Must finish on right/centre
+                if x_bottom > width * 0.42:
 
-    # Convert Hough output to simple
-    # rows containing x1,y1,x2,y2
-    white_data = white_lines.reshape(
-        -1,
-        4
-    ).tolist()
-
-    for values in white_data:
-
-        x1, y1, x2, y2 = [
-            int(value)
-            for value in values
-        ]
-
-        if x2 == x1:
-            continue
-
-        # Calculate slope
-        slope = (
-            (y2 - y1)
-            / (x2 - x1)
-        )
-
-        # Calculate midpoint
-        mid_x = (x1 + x2) / 2
-        mid_y = (y1 + y2) / 2
-
-        # Right lane should have
-        # positive slope
-        if slope > 0.5:
-
-            # Keep right-side lines
-            if mid_x > width * 0.45:
-
-                # Ignore high lines
-                if mid_y > height * 0.40:
-
-                    right_candidates.append(
-                        (slope, x1, y1, x2, y2)
+                    right_lines.append(
+                        (
+                            x_bottom,
+                            length,
+                            slope,
+                            x1,
+                            y1,
+                            x2,
+                            y2
+                        )
                     )
 
 
-# ============================================
-# 11. CALCULATE BEST LINE
-# ============================================
+    # ========================================================
+    # 9. SELECT BEST LEFT LINE
+    # ========================================================
 
-def calculate_line(candidates):
+    def select_left(lines_list):
 
-    if len(candidates) == 0:
-        return None
+        if len(lines_list) == 0:
+            return None
 
-    slopes = []
-    intercepts = []
 
-    for slope, x1, y1, x2, y2 in candidates:
+        # Prefer lines around the expected
+        # left lane position.
 
-        # y = mx + b
-        intercept = y1 - slope * x1
+        expected_x = width * 0.25
 
-        slopes.append(slope)
-        intercepts.append(intercept)
 
-    # Median is more stable
-    # than average
-    slope = float(
-        np.median(slopes)
+        def score(item):
+
+            x_bottom = item[0]
+            length = item[1]
+
+            distance = abs(
+                x_bottom - expected_x
+            )
+
+            position_score = max(
+                0,
+                1 - distance / width
+            )
+
+            length_score = min(
+                length / (width * 0.25),
+                1
+            )
+
+            return (
+                position_score * 0.65
+                +
+                length_score * 0.35
+            )
+
+
+        return max(
+            lines_list,
+            key=score
+        )
+
+
+    # ========================================================
+    # 10. SELECT BEST RIGHT LINE
+    # ========================================================
+
+    def select_right(lines_list):
+
+        if len(lines_list) == 0:
+            return None
+
+
+        expected_x = width * 0.78
+
+
+        def score(item):
+
+            x_bottom = item[0]
+            length = item[1]
+
+            distance = abs(
+                x_bottom - expected_x
+            )
+
+            position_score = max(
+                0,
+                1 - distance / width
+            )
+
+            length_score = min(
+                length / (width * 0.25),
+                1
+            )
+
+            return (
+                position_score * 0.65
+                +
+                length_score * 0.35
+            )
+
+
+        return max(
+            lines_list,
+            key=score
+        )
+
+
+    best_left = select_left(
+        left_lines
     )
 
-    intercept = float(
-        np.median(intercepts)
-    )
-
-    return slope, intercept
-
-
-left_line = calculate_line(
-    left_candidates
-)
-
-right_line = calculate_line(
-    right_candidates
-)
-
-
-# ============================================
-# 12. CREATE LINE POINTS
-# ============================================
-
-def make_points(line):
-
-    if line is None:
-        return None
-
-    slope, intercept = line
-
-    # Top of lane
-    y_top = int(
-        height * 0.43
-    )
-
-    # Bottom of image
-    y_bottom = height - 1
-
-    # x = (y - b) / m
-
-    x_top = int(
-        (y_top - intercept)
-        / slope
-    )
-
-    x_bottom = int(
-        (y_bottom - intercept)
-        / slope
-    )
-
-    return (
-        x_top,
-        y_top,
-        x_bottom,
-        y_bottom
-    )
-
-
-left_points = make_points(
-    left_line
-)
-
-right_points = make_points(
-    right_line
-)
-
-
-# ============================================
-# 13. LIMIT RIGHT LINE
-# ============================================
-
-if right_points is not None:
-
-    rx_top, ry_top, rx_bottom, ry_bottom = right_points
-
-    # Keep the top point near the
-    # actual white road marking
-    rx_top = max(
-        rx_top,
-        int(width * 0.48)
-    )
-
-    rx_top = min(
-        rx_top,
-        int(width * 0.62)
-    )
-
-    # Keep bottom point on the
-    # right road boundary
-    rx_bottom = max(
-        rx_bottom,
-        int(width * 0.82)
-    )
-
-    rx_bottom = min(
-        rx_bottom,
-        int(width * 0.94)
-    )
-
-    right_points = (
-        rx_top,
-        ry_top,
-        rx_bottom,
-        ry_bottom
+    best_right = select_right(
+        right_lines
     )
 
 
-# ============================================
-# 14. CREATE OUTPUT
-# ============================================
+    # ========================================================
+    # 11. CREATE OUTPUT
+    # ========================================================
 
-output = image.copy()
+    output = image.copy()
 
 
-# ============================================
-# 15. CREATE DRIVABLE AREA
-# ============================================
+    # If we don't have both lines,
+    # don't create a wrong green area.
 
-if (
-    left_points is not None
-    and right_points is not None
-):
+    if (
+        best_left is None
+        or
+        best_right is None
+    ):
 
-    lx_top, ly_top, lx_bottom, ly_bottom = (
-        left_points
+        print(
+            "Skipped - not enough lane lines:",
+            os.path.basename(input_path)
+        )
+
+        cv2.imwrite(
+            output_path,
+            output
+        )
+
+        return
+
+
+    # ========================================================
+    # 12. EXTRACT BEST LINES
+    # ========================================================
+
+    left_x_bottom = best_left[0]
+    right_x_bottom = best_right[0]
+
+
+    # --------------------------------------------------------
+    # IMPORTANT SANITY CHECK
+    # --------------------------------------------------------
+
+    lane_width = (
+        right_x_bottom
+        -
+        left_x_bottom
     )
 
-    rx_top, ry_top, rx_bottom, ry_bottom = (
-        right_points
+
+    # Reject clearly wrong detections
+
+    if (
+        lane_width < width * 0.20
+        or
+        lane_width > width * 0.90
+    ):
+
+        print(
+            "Skipped - incorrect lane width:",
+            os.path.basename(input_path)
+        )
+
+        cv2.imwrite(
+            output_path,
+            output
+        )
+
+        return
+
+
+    # ========================================================
+    # 13. CREATE STRAIGHT LANE BOUNDARIES
+    # ========================================================
+
+    def make_line_points(line):
+
+        x_bottom = line[0]
+        slope = line[2]
+
+        y_bottom = height - 1
+
+        # Don't go too close to horizon
+        y_top = int(
+            height * 0.43
+        )
+
+
+        # x1 = x2 - (y2-y1)/slope
+        x_top = (
+            x_bottom
+            -
+            (y_bottom - y_top)
+            /
+            slope
+        )
+
+
+        return (
+            int(x_top),
+            y_top,
+            int(x_bottom),
+            y_bottom
+        )
+
+
+    left_points = make_line_points(
+        best_left
+    )
+
+    right_points = make_line_points(
+        best_right
     )
 
 
-    # ----------------------------------------
-    # Create lane polygon
-    # ----------------------------------------
+    # ========================================================
+    # 14. FINAL GEOMETRY CHECK
+    # ========================================================
+
+    lx_top = left_points[0]
+    lx_bottom = left_points[2]
+
+    rx_top = right_points[0]
+    rx_bottom = right_points[2]
+
+
+    # Left must remain left of right
+
+    if (
+        lx_top >= rx_top
+        or
+        lx_bottom >= rx_bottom
+    ):
+
+        print(
+            "Skipped - invalid geometry:",
+            os.path.basename(input_path)
+        )
+
+        cv2.imwrite(
+            output_path,
+            output
+        )
+
+        return
+
+
+    # --------------------------------------------------------
+    # Top lane should not be too wide
+    # --------------------------------------------------------
+
+    top_width = (
+        rx_top
+        -
+        lx_top
+    )
+
+
+    if top_width > width * 0.55:
+
+        print(
+            "Skipped - top lane too wide:",
+            os.path.basename(input_path)
+        )
+
+        cv2.imwrite(
+            output_path,
+            output
+        )
+
+        return
+
+
+    # ========================================================
+    # 15. CREATE GREEN POLYGON
+    # ========================================================
 
     polygon = np.array([
-        (lx_top, ly_top),
-        (rx_top, ry_top),
-        (rx_bottom, ry_bottom),
-        (lx_bottom, ly_bottom)
+        (lx_top, left_points[1]),
+        (rx_top, right_points[1]),
+        (rx_bottom, right_points[3]),
+        (lx_bottom, left_points[3])
     ], dtype=np.int32)
 
 
-    # ----------------------------------------
-    # Create overlay
-    # ----------------------------------------
+    # ========================================================
+    # 16. GREEN TRANSPARENT AREA
+    # ========================================================
 
     overlay = output.copy()
+
 
     cv2.fillPoly(
         overlay,
@@ -437,10 +612,6 @@ if (
         (0, 255, 0)
     )
 
-
-    # ----------------------------------------
-    # Transparent green area
-    # ----------------------------------------
 
     output = cv2.addWeighted(
         overlay,
@@ -451,87 +622,199 @@ if (
     )
 
 
-    # ========================================
-    # 16. DRAW LEFT GREEN LINE
-    # ========================================
+    # ========================================================
+    # 17. DRAW LEFT GREEN LINE
+    # ========================================================
 
     cv2.line(
         output,
-        (lx_top, ly_top),
-        (lx_bottom, ly_bottom),
+        (
+            left_points[0],
+            left_points[1]
+        ),
+        (
+            left_points[2],
+            left_points[3]
+        ),
         (0, 255, 0),
         5
     )
 
 
-    # ========================================
-    # 17. DRAW RIGHT GREEN LINE
-    # ========================================
+    # ========================================================
+    # 18. DRAW RIGHT GREEN LINE
+    # ========================================================
 
     cv2.line(
         output,
-        (rx_top, ry_top),
-        (rx_bottom, ry_bottom),
+        (
+            right_points[0],
+            right_points[1]
+        ),
+        (
+            right_points[2],
+            right_points[3]
+        ),
         (0, 255, 0),
         5
     )
 
 
-# ============================================
-# 18. SAVE OUTPUT IMAGE
-# ============================================
+    # ========================================================
+    # 19. SAVE
+    # ========================================================
 
-success = cv2.imwrite(
-    "lane_output.png",
-    output
-)
-
-if success:
-
-    print(
-        "Output saved successfully as "
-        "lane_output.png"
-    )
-
-else:
-
-    print(
-        "Could not save output image!"
+    success = cv2.imwrite(
+        output_path,
+        output
     )
 
 
-# ============================================
-# 19. DISPLAY OUTPUT
-# ============================================
+    if success:
 
-cv2.imshow(
-    "Lane Detection",
-    output
+        print(
+            "Processed:",
+            os.path.basename(input_path)
+        )
+
+    else:
+
+        print(
+            "ERROR saving:",
+            os.path.basename(input_path)
+        )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+
+input_folder = "input"
+output_folder = "output"
+
+
+os.makedirs(
+    output_folder,
+    exist_ok=True
 )
 
 
-# ============================================
-# 20. KEEP WINDOW OPEN
-# ============================================
+# Supported image formats
 
-while True:
-
-    key = cv2.waitKey(100) & 0xFF
-
-    # Press any key to close
-    if key != 255:
-        break
-
-    # Close using X
-    if cv2.getWindowProperty(
-        "Lane Detection",
-        cv2.WND_PROP_VISIBLE
-    ) < 1:
-        break
+extensions = (
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".bmp"
+)
 
 
-# ============================================
-# 21. CLOSE WINDOWS
-# ============================================
+# Find all images
 
-cv2.destroyAllWindows()
+image_files = [
+    f
+    for f in os.listdir(input_folder)
+    if f.lower().endswith(
+        extensions
+    )
+]
+
+
+# Sort 1,2,3...10 correctly
+
+def sort_key(filename):
+
+    name = os.path.splitext(
+        filename
+    )[0]
+
+    try:
+        return int(name)
+
+    except ValueError:
+        return name.lower()
+
+
+image_files.sort(
+    key=sort_key
+)
+
+
+# ============================================================
+# PROCESS ALL IMAGES
+# ============================================================
+
+print()
+print(
+    "======================================"
+)
+
+print(
+    "LANE DETECTION STARTED"
+)
+
+print(
+    "Images found:",
+    len(image_files)
+)
+
+print(
+    "======================================"
+)
+
+print()
+
+
+for filename in image_files:
+
+    input_path = os.path.join(
+        input_folder,
+        filename
+    )
+
+
+    name = os.path.splitext(
+        filename
+    )[0]
+
+
+    output_filename = (
+        name
+        +
+        "_detected.png"
+    )
+
+
+    output_path = os.path.join(
+        output_folder,
+        output_filename
+    )
+
+
+    process_image(
+        input_path,
+        output_path
+    )
+
+
+# ============================================================
+# FINISHED
+# ============================================================
+
+print()
+print(
+    "======================================"
+)
+
+print(
+    "ALL IMAGES PROCESSED"
+)
+
+print(
+    "Check the output folder."
+)
+
+print(
+    "======================================"
+)
