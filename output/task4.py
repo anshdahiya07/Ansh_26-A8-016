@@ -368,7 +368,7 @@ def detect_road(image):
     number, labels, stats, centroids = \
         cv2.connectedComponentsWithStats(
             road,
-            8
+            connectivity=8
         )
 
     # Largest connected region = road
@@ -522,7 +522,7 @@ def detect_obstacles(image, road):
     number, labels, stats, centroids = \
         cv2.connectedComponentsWithStats(
             obstacle_mask,
-            8
+            connectivity=8
         )
 
     clean_mask = np.zeros_like(
@@ -734,7 +734,7 @@ def a_star(
 
 
     cost_so_far = {
-        start_small: 0
+        start_small: 0.0
     }
 
 

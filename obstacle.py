@@ -89,9 +89,10 @@ def get_obstacles(hsv):
             )
 
             # Foreground regions
-            sure_fg = np.uint8(
-                distance > 0.5 * distance.max()
-            )
+           
+            sure_fg = (
+    distance > 0.5 * distance.max()
+).astype(np.uint8)
 
             number, labels, stats, centroids = \
                 cv2.connectedComponentsWithStats(sure_fg)
